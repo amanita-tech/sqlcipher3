@@ -36,6 +36,8 @@ def odno(soedinenie, zapros: str) -> str:
 
 
 def main() -> int:
+    # Консоль Windows по умолчанию в cp1252: русский текст без этого не напечатать.
+    sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     sqlcipher_zhdem, openssl_zhdem = ozhidaemoe(sys.argv[1])
