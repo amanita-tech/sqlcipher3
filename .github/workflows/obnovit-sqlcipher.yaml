@@ -1,0 +1,94 @@
+# Поднятие версии SQLCipher в копии amanita-tech.
+#
+# Пересобирает вшитый исходник vendor/sqlite3.c и vendor/sqlite3.h из тега v<версия> репозитория
+# sqlcipher/sqlcipher сценарием автора vendor/update, переписывает метку версии колеса
+# («+sqlcipher<версия>») в setup.py и pyproject.toml и кладёт результат в ветку sqlcipher-<версия>.
+# Дальше — вручную, порядок в SBORKA-AMANITA.md: просмотреть ветку, влить в master, поставить тег.
+name: Обновить SQLCipher
+
+on:
+  workflow_dispatch:
+    inputs:
+      versiya:
+        description: "Версия SQLCipher без «v», например 4.19.0 (тег v<версия> в sqlcipher/sqlcipher)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  obnovit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверить вид версии
+        env:
+          VERSIYA: ${{ inputs.versiya }}
+        run: |
+          if [[ ! "$VERSIYA" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::версия должна быть вида 4.19.0, получено «$VERSIYA»"
+            exit 1
+          fi
+
+      - name: Поставить инструменты (tclsh нужен сборке amalgamation, libssl-dev — настройке)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tcl libssl-dev
+
+      - name: Собрать amalgamation сценарием автора
+        env:
+          VERSIYA: ${{ inputs.versiya }}
+          PREFIX: /usr/local
+        run: |
+          set -euo pipefail
+          rabota="$RUNNER_TEMP/amalgamation"
+          mkdir -p "$rabota"
+          cp vendor/update "$rabota/"
+          cd "$rabota"
+          git clone --depth 1 --branch "v$VERSIYA" https://github.com/sqlcipher/sqlcipher
+          git -C sqlcipher rev-parse HEAD > "$RUNNER_TEMP/kommit-sqlcipher.txt"
+          bash ./update
+          cp sqlite3.c sqlite3.h "$GITHUB_WORKSPACE/vendor/"
+
+      - name: Сверить, что внутри именно эта версия
+        env:
+          VERSIYA: ${{ inputs.versiya }}
+        run: |
+          set -euo pipefail
+          vnutri=$(grep -m1 '^#define CIPHER_VERSION_NUMBER' vendor/sqlite3.c | awk '{print $3}')
+          sqlite=$(grep -m1 '^#define SQLITE_VERSION ' vendor/sqlite3.c | awk '{print $3}' | tr -d '"')
+          echo "В amalgamation: SQLCipher $vnutri, SQLite $sqlite"
+          if [[ "$vnutri" != "$VERSIYA" ]]; then
+            echo "::error::в amalgamation SQLCipher $vnutri, а просили $VERSIYA"
+            exit 1
+          fi
+          echo "SQLITE=$sqlite" >> "$GITHUB_ENV"
+
+      - name: Переписать метку версии колеса
+        env:
+          VERSIYA: ${{ inputs.versiya }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/\+sqlcipher[0-9]+\.[0-9]+\.[0-9]+/+sqlcipher$VERSIYA/" setup.py pyproject.toml
+          grep -n "sqlcipher$VERSIYA" setup.py pyproject.toml
+
+      - name: Положить в ветку sqlcipher-<версия>
+        env:
+          VERSIYA: ${{ inputs.versiya }}
+        run: |
+          set -euo pipefail
+          kommit=$(cat "$RUNNER_TEMP/kommit-sqlcipher.txt")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "sqlcipher-$VERSIYA"
+          git add vendor/sqlite3.c vendor/sqlite3.h setup.py pyproject.toml
+          git commit -m "SQLCipher $VERSIYA: пересобран amalgamation" \
+                     -m "Исходник: sqlcipher/sqlcipher v$VERSIYA, коммит $kommit; SQLite $SQLITE. Сценарий автора vendor/update."
+          git push --force origin "sqlcipher-$VERSIYA"
+          {
+            echo "### Ветка sqlcipher-$VERSIYA готова"
+            echo "- SQLCipher $VERSIYA (коммит $kommit), SQLite $SQLITE"
+            echo "- дальше — SBORKA-AMANITA.md, раздел «Поднять версию SQLCipher»"
+          } >> "$GITHUB_STEP_SUMMARY"
