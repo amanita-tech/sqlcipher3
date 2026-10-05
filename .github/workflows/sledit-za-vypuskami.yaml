@@ -1,0 +1,167 @@
+# Слежение за выпусками (копия amanita-tech): раз в сутки сверяет вшитую в vendor/ версию SQLCipher
+# и закреплённый в conanfile.py OpenSSL с последними выпусками и, если вышло новое, открывает задачу
+# (issue) с порядком поднятия версии. Повторную задачу на ту же версию не открывает.
+#
+# Пробный запуск: «Run workflow» с полем «известная версия SQLCipher» (например 4.18.0) — слежение
+# сделает вид, что у копии она старая, и откроет задачу; после пробы задачу закройте.
+name: Следить за выпусками
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      izvestnaya_sqlcipher:
+        description: "Пробный запуск: считать вшитой эту версию SQLCipher вместо настоящей (пусто — настоящая)"
+        required: false
+        type: string
+      izvestnyj_openssl:
+        description: "Пробный запуск: считать закреплённым этот OpenSSL вместо настоящего (пусто — настоящий)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  sledit:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Ветка OpenSSL, внутри которой ищем свежий выпуск (решение оператора: ветка 3.6).
+      VETKA_OPENSSL: "3.6"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Не дать расписанию отключиться
+        # GitHub отключает расписание в публичном репозитории после 60 дней без изменений в нём.
+        # Повторное включение сбрасывает этот счётчик.
+        run: |
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/sledit-za-vypuskami.yaml/enable" \
+            && echo "Расписание подтверждено включённым" \
+            || echo "::warning::не удалось подтвердить включение расписания"
+
+      - name: Узнать версии
+        id: versii
+        env:
+          IZVESTNAYA_SQLCIPHER: ${{ inputs.izvestnaya_sqlcipher }}
+          IZVESTNYJ_OPENSSL: ${{ inputs.izvestnyj_openssl }}
+        run: |
+          set -euo pipefail
+          # Что вшито в копию. Берём из самого исходника, а не из заметки: так версию не забыть поднять.
+          vshito=$(grep -m1 '^#define CIPHER_VERSION_NUMBER' vendor/sqlite3.c | awk '{print $3}')
+          [[ -n "$vshito" ]] || { echo "::error::в vendor/sqlite3.c не найден CIPHER_VERSION_NUMBER"; exit 1; }
+          zakrepleno=$(grep -oE "openssl/[0-9]+\.[0-9]+\.[0-9]+" conanfile.py | head -1 | cut -d/ -f2)
+          [[ -n "$zakrepleno" ]] || { echo "::error::в conanfile.py не найден openssl/X.Y.Z"; exit 1; }
+          probnyj=""
+          if [[ -n "$IZVESTNAYA_SQLCIPHER" ]]; then vshito="$IZVESTNAYA_SQLCIPHER"; probnyj="1"; fi
+          if [[ -n "$IZVESTNYJ_OPENSSL" ]]; then zakrepleno="$IZVESTNYJ_OPENSSL"; probnyj="1"; fi
+
+          # Последний выпуск SQLCipher: самый большой тег vX.Y.Z (предварительные — beta, rc — не берём).
+          svezhij=$(gh api "repos/sqlcipher/sqlcipher/tags" --paginate --jq '.[].name' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1)
+          [[ -n "$svezhij" ]] || { echo "::error::не нашлось ни одного выпуска SQLCipher"; exit 1; }
+
+          # Последний выпуск OpenSSL внутри нашей ветки.
+          svezhij_openssl=$(gh api "repos/openssl/openssl/tags" --paginate --jq '.[].name' \
+            | grep -E "^openssl-${VETKA_OPENSSL//./\\.}\.[0-9]+$" | sed 's/^openssl-//' | sort -V | tail -1)
+          [[ -n "$svezhij_openssl" ]] || { echo "::error::не нашлось выпуска OpenSSL ветки $VETKA_OPENSSL"; exit 1; }
+
+          {
+            echo "vshito=$vshito"
+            echo "svezhij=$svezhij"
+            echo "zakrepleno=$zakrepleno"
+            echo "svezhij_openssl=$svezhij_openssl"
+            echo "probnyj=$probnyj"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Сверка выпусков"
+            echo "| | у копии | последний выпуск |"
+            echo "|---|---|---|"
+            echo "| SQLCipher | $vshito | $svezhij |"
+            echo "| OpenSSL ($VETKA_OPENSSL) | $zakrepleno | $svezhij_openssl |"
+            if [[ -n "$probnyj" ]]; then
+              echo ""
+              echo "Пробный запуск: у копии подставлены значения из полей запуска."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Открыть задачу про SQLCipher
+        env:
+          VSHITO: ${{ steps.versii.outputs.vshito }}
+          SVEZHIJ: ${{ steps.versii.outputs.svezhij }}
+          PROBNYJ: ${{ steps.versii.outputs.probnyj }}
+        run: |
+          set -euo pipefail
+          noveje=$(printf '%s\n%s\n' "$VSHITO" "$SVEZHIJ" | sort -V | tail -1)
+          if [[ "$VSHITO" == "$SVEZHIJ" || "$noveje" != "$SVEZHIJ" ]]; then
+            echo "SQLCipher: у копии $VSHITO, последний выпуск $SVEZHIJ — новой версии нет"
+            exit 0
+          fi
+          zagolovok="Вышла новая версия SQLCipher: $SVEZHIJ (у копии $VSHITO)"
+          uzhe=$(gh issue list --state all --limit 200 --json title --jq "[.[] | select(.title | startswith(\"Вышла новая версия SQLCipher: $SVEZHIJ \"))] | length")
+          if [[ "$uzhe" != "0" ]]; then
+            echo "Задача про SQLCipher $SVEZHIJ уже заводилась — повторно не открываю"
+            exit 0
+          fi
+          gh label create sqlcipher-vypusk --color 0e8a16 --description "Вышла новая версия SQLCipher или OpenSSL" --force
+          probnaya=""
+          if [[ -n "$PROBNYJ" ]]; then
+            probnaya="> Задача открыта пробным запуском слежения (поля запуска подменили известную версию); после проверки её надо закрыть."
+          fi
+          cat > "$RUNNER_TEMP/tekst.md" <<EOF
+          ${probnaya}
+
+          Вышла SQLCipher **$SVEZHIJ**, в копии вшита **$VSHITO**.
+
+          Что нового: https://github.com/sqlcipher/sqlcipher/blob/v$SVEZHIJ/CHANGELOG.md
+
+          ## Что сделать (подробно — SBORKA-AMANITA.md, раздел «Поднять версию SQLCipher»)
+          1. Actions → «Обновить SQLCipher» → Run workflow → версия \`$SVEZHIJ\`. Сценарий пересоберёт \`vendor/\` и положит результат в ветку \`sqlcipher-$SVEZHIJ\`.
+          2. Просмотреть ветку (сравнить с master), влить её в master.
+          3. Поставить тег вида \`<версия обвязки>-sqlcipher$SVEZHIJ\`, например \`0.6.3-sqlcipher$SVEZHIJ\`: сборка запустится сама и создаст релиз с колесом и SHA256SUMS.
+          4. В репозитории ассистента: закрепить новое колесо (адрес и SHA-256 в \`zavisimosti.txt\`), поправить ожидаемую версию в тесте, прогнать весь pytest и \`proba_sqlcipher.py\`.
+
+          Если новая версия — следующий мажорный выпуск (меняется первая цифра), формат базы мог измениться: сначала проба на копии данных.
+          EOF
+          gh issue create --title "$zagolovok" --label sqlcipher-vypusk --body-file "$RUNNER_TEMP/tekst.md"
+
+      - name: Открыть задачу про OpenSSL
+        env:
+          ZAKREPLENO: ${{ steps.versii.outputs.zakrepleno }}
+          SVEZHIJ: ${{ steps.versii.outputs.svezhij_openssl }}
+          PROBNYJ: ${{ steps.versii.outputs.probnyj }}
+        run: |
+          set -euo pipefail
+          noveje=$(printf '%s\n%s\n' "$ZAKREPLENO" "$SVEZHIJ" | sort -V | tail -1)
+          if [[ "$ZAKREPLENO" == "$SVEZHIJ" || "$noveje" != "$SVEZHIJ" ]]; then
+            echo "OpenSSL: закреплён $ZAKREPLENO, последний выпуск ветки $SVEZHIJ — новой версии нет"
+            exit 0
+          fi
+          # Колесо собирается из пакета Conan Center; пока там нет нужной версии, собирать нечем.
+          if ! curl -fsS "https://center2.conan.io/v2/conans/search?q=openssl" | grep -q "\"openssl/$SVEZHIJ@"; then
+            echo "OpenSSL $SVEZHIJ вышел, но пакета в Conan Center ещё нет — подождём следующего запуска"
+            exit 0
+          fi
+          zagolovok="Вышел новый OpenSSL: $SVEZHIJ (в копии закреплён $ZAKREPLENO)"
+          uzhe=$(gh issue list --state all --limit 200 --json title --jq "[.[] | select(.title | startswith(\"Вышел новый OpenSSL: $SVEZHIJ \"))] | length")
+          if [[ "$uzhe" != "0" ]]; then
+            echo "Задача про OpenSSL $SVEZHIJ уже заводилась — повторно не открываю"
+            exit 0
+          fi
+          gh label create sqlcipher-vypusk --color 0e8a16 --description "Вышла новая версия SQLCipher или OpenSSL" --force
+          probnaya=""
+          if [[ -n "$PROBNYJ" ]]; then
+            probnaya="> Задача открыта пробным запуском слежения; после проверки её надо закрыть."
+          fi
+          cat > "$RUNNER_TEMP/tekst.md" <<EOF
+          ${probnaya}
+
+          Вышел OpenSSL **$SVEZHIJ**, в копии закреплён **$ZAKREPLENO** (пакет есть в Conan Center).
+
+          Это правка безопасности криптобиблиотеки колеса: поднять так же, как SQLCipher
+          (SBORKA-AMANITA.md, раздел «Поднять версию OpenSSL»): версия в \`conanfile.py\`, тег, закрепление колеса в репозитории ассистента.
+          EOF
+          gh issue create --title "$zagolovok" --label sqlcipher-vypusk --body-file "$RUNNER_TEMP/tekst.md"
