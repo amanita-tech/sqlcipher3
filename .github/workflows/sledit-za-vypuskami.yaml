@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      # Ветка OpenSSL, внутри которой ищем свежий выпуск (решение оператора: ветка 3.6).
-      VETKA_OPENSSL: "3.6"
+      # Ветка OpenSSL, внутри которой ищем свежий выпуск (решение оператора 06.10.2026: ветка 3.5 с долгой поддержкой, до 2030-04-08).
+      VETKA_OPENSSL: "3.5"
     steps:
       - uses: actions/checkout@v4
 

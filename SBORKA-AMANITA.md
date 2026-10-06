@@ -1,7 +1,7 @@
 # Копия sqlcipher3 для личного ассистента (amanita-tech)
 
 Копия [coleifer/sqlcipher3](https://github.com/coleifer/sqlcipher3) с ядром **SQLCipher 4.19.0**
-(SQLite 3.53.4) и **OpenSSL 3.6.5**, собранная в одно колесо — **Windows AMD64, Python 3.14**.
+(SQLite 3.53.4) и **OpenSSL 3.5.9** (ветка 3.5 с долгой поддержкой), собранная в одно колесо — **Windows AMD64, Python 3.14**.
 Нужна личному ассистенту (репозиторий `amanita-tech/lichnyy-assistent`, ADR-2, раздел 8):
 готовые колёса автора отстают от SQLCipher на семь выпусков. Исходник и сценарий сборки — автора;
 здесь только то, что перечислено ниже.
@@ -12,7 +12,7 @@
 |---|---|
 | `vendor/sqlite3.c`, `vendor/sqlite3.h` | пересобраны из тега `v4.19.0` репозитория `sqlcipher/sqlcipher` сценарием автора `vendor/update` (запуск — `.github/workflows/obnovit-sqlcipher.yaml`) |
 | `setup.py`, `pyproject.toml` | к версии добавлена метка ядра: `0.6.3+sqlcipher4.19.0` |
-| `conanfile.py` | `openssl/3.6.5` вместо `3.6.0` |
+| `conanfile.py` | `openssl/3.5.9` (ветка 3.5 LTS) вместо `3.6.0` |
 | `.github/workflows/wheels.yaml` | только Windows AMD64 cp314; вместо публикации в PyPI — сверка колеса и релиз копии |
 | `.github/workflows/obnovit-sqlcipher.yaml` | новый: поднятие версии SQLCipher |
 | `.github/workflows/sledit-za-vypuskami.yaml` | новый: слежение за выпусками SQLCipher и OpenSSL |
@@ -81,7 +81,7 @@
 Поводом служит задача `Вышел новый OpenSSL: X.Y.Z` (открывается, только когда пакет уже есть в
 Conan Center). Сборка берёт OpenSSL из Conan Center, поэтому:
 
-1. В `conanfile.py` заменить `openssl/A.B.C` на `openssl/X.Y.Z` (ветка — только 3.6, пока решением
+1. В `conanfile.py` заменить `openssl/A.B.C` на `openssl/X.Y.Z` (ветка — только 3.5, пока решением
    не сменена; смена ветки — решение оператора, его фиксирует ADR-2).
 2. Влить в master, поставить тег вида `0.6.3-sqlcipher4.19.0-opensslX.Y.Z`. Имя колеса не
    изменится (метка несёт только версию ядра) — отличают его тег в адресе и сумма.
@@ -89,7 +89,7 @@ Conan Center). Сборка берёт OpenSSL из Conan Center, поэтому
 
 **Сроки жизни ветки** (страница политики выпусков OpenSSL, openssl.org/policies/releasestrat.html,
 на 05.10.2026): 3.6 поддерживается до 2026-11-01, 4.0 — до 2027-05-14, 3.5 (долгая поддержка) — до
-2030-04-08. Ветку 3.6 выбрало решение оператора; до её конца ветку надо сменить его решением.
+2030-04-08. Ветку 3.5 выбрало решение оператора 06.10.2026 (ветка 3.6 заканчивается 2026-11-01); ветку надо сменить его решением до 2030-04-08.
 
 ## Слежение за выпусками
 
@@ -97,7 +97,7 @@ Conan Center). Сборка берёт OpenSSL из Conan Center, поэтому
 
 - версия SQLCipher «у копии» берётся из самого `vendor/sqlite3.c`, OpenSSL — из `conanfile.py`;
 - последний выпуск SQLCipher — наибольший тег `vX.Y.Z` без `beta`/`rc`; OpenSSL — наибольший
-  `openssl-3.6.N`;
+  `openssl-3.5.N`;
 - вышло новое — открывается задача с меткой `sqlcipher-vypusk` и порядком действий; по одной
   версии — одна задача, повторно не открывается; про OpenSSL — только когда пакет есть в Conan
   Center;
